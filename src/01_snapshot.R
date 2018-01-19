@@ -25,39 +25,85 @@ all_pts <- read_data(dir_raw, "patients", FALSE) %>%
     
 mbo_pts <- concat_encounters(all_pts$millennium.id)
 
+insulin_pts <- read_data(dir_raw, "pts-meds", FALSE) %>%
+    as.patients()
+
+
 # run MBO queries
 #   * Medications - Inpatient - All
 #   * Orders
 
-orders <- read_data(dir_raw, "orders", FALSE) %>%
+orders <- read_data(dir_raw, "orders_insulin", FALSE) %>%
     distinct() %>%
     rename(millennium.id = `Encounter Identifier`,
            order.datetime = `Date and Time - Original (Placed)`,
            stop.datetime = `Date and Time - Discontinue Effective`,
            order = `Mnemonic (Primary Generic) FILTER ON`,
+           prn = `PRN Indicator`,
            order.id = `Order Id`,
-           parent.order.id = `Parent Order Id`,
+           order.parent.id = `Parent Order Id`,
            order.unit = `Nurse Unit (Order)`) %>%
     mutate_at(c("order.datetime", "stop.datetime"), ymd_hms) %>%
     mutate_at(c("order.datetime", "stop.datetime"), with_tz, tzone = tz) %>%
-    filter(is.na(stop.datetime) | floor_date(stop.datetime, "day") >= mdy("1/16/2018", tz = tz))
+    filter(is.na(stop.datetime) | floor_date(stop.datetime, "day") >= mdy("1/16/2018", tz = tz)) %>%
+    mutate_at("order.parent.id", funs(na_if(., 0))) %>%
+    mutate(orig.order.id = coalesce(order.parent.id, order.id))
 
 active_orders <- orders %>%
     distinct(millennium.id) %>%
     mutate(order = TRUE)
 
-meds <- read_data(dir_raw, "meds-inpt", FALSE) %>%
-    as.meds_inpt() 
+all_orders <- read_data(dir_raw, "orders-parent", FALSE) %>%
+    distinct() %>%
+    select(millennium.id = `Encounter Identifier`,
+           order.datetime = `Date and Time - Original (Placed)`,
+           stop.datetime = `Date and Time - Discontinue Effective`,
+           order = `Mnemonic (Primary Generic) FILTER ON`,
+           prn = `PRN Indicator`,
+           order.id = `Order Id`,
+           order.parent.id = `Parent Order Id`,
+           order.unit = `Nurse Unit (Order)`) %>%
+    mutate_at(c("order.datetime", "stop.datetime"), ymd_hms) %>%
+    mutate_at(c("order.datetime", "stop.datetime"), with_tz, tzone = tz) %>%
+    # mutate_at("order", str_to_lower) %>%
+    filter((is.na(stop.datetime) | floor_date(stop.datetime, "day") >= mdy("1/16/2018", tz = tz)),
+           str_detect(order, regex("insulin", ignore_case = TRUE))) %>%
+    mutate_at("order.parent.id", funs(na_if(., 0))) %>%
+    mutate(orig.order.id = coalesce(order.parent.id, order.id))
 
-active_meds <- meds %>%
+active_orders_all <- all_orders %>%
+    distinct(millennium.id) %>%
+    mutate(order = TRUE)
+
+distinct(all_orders, order)
+
+meds <- read_data(dir_raw, "meds-inpt", FALSE) %>%
+    as.meds_inpt() %>%
     filter(med.datetime > mdy("1/13/2018", tz = tz),
            med.datetime < mdy("1/16/2018", tz = tz)) %>%
+    mutate_at("order.parent.id", funs(na_if(., 0))) %>%
+    mutate(orig.order.id = coalesce(order.parent.id, order.id))
+
+mbo_orders <- concat_encounters(meds$orig.order.id)
+
+# run MBO query
+#   * Orders Meds - Details - by Order Id
+
+details <- read_data(dir_raw, "orders-details", FALSE) %>%
+    as.order_detail()
+
+x <- anti_join(meds, details, by = c("orig.order.id" = "order.id"))
+y <- anti_join(orders, details, by = c("orig.order.id" = "order.id"))
+
+
+active_meds <- meds %>%
     distinct(millennium.id) %>%
     mutate(dose = TRUE)
 
 data_insulin <- all_pts %>%
     left_join(active_orders, by = "millennium.id") %>%
-    left_join(active_meds, by = "millennium.id")
+    left_join(active_meds, by = "millennium.id") %>%
+    mutate_at("order", funs(coalesce(., dose)))
 
 n <- all_pts %>%
     count(facility)
@@ -66,5 +112,23 @@ d <- data_insulin %>%
     group_by(facility) %>%
     summarize_at(c("order", "dose"), sum, na.rm = TRUE) %>%
     left_join(n, by = "facility") %>%
-    mutate(pct = dose / order,
-           pct_order = order / n)
+    mutate(pct_order = order / n,
+           pct_dose_order = dose / order,
+           pct_dose_total = dose / n)
+
+active <- filter(all_pts, encounter.status == "Active") %>%
+    count(facility)
+
+d2 <- data_insulin %>%
+    filter(encounter.status == "Active") %>%
+    group_by(facility) %>%
+    summarize_at(c("order", "dose"), sum, na.rm = TRUE) %>%
+    left_join(n, by = "facility") %>%
+    mutate(pct_order = order / n,
+           pct_dose_order = dose / order,
+           pct_dose_total = dose / n)
+
+write.csv(data_insulin, "data/external/2018-01-15_insulin.csv", row.names = FALSE)
+
+data_doses <- meds %>%
+    full_join(orders, by = c("millennium.id", "orig.order.id"))
