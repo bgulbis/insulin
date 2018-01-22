@@ -30,6 +30,7 @@ insulin_pts <- read_data(dir_raw, "pts-meds", FALSE) %>%
 
 
 # run MBO queries
+#   * Location History
 #   * Medications - Inpatient - All
 #   * Orders
 
@@ -100,10 +101,27 @@ active_meds <- meds %>%
     distinct(millennium.id) %>%
     mutate(dose = TRUE)
 
+locations <- read_data(dir_raw, "location", FALSE) %>%
+    as.locations() %>%
+    tidy_data() %>%
+    filter(floor_date(arrive.datetime, "day") <= mdy("1/15/2018", tz = tz),
+           floor_date(depart.datetime, "day") >= mdy("1/15/2018", tz = tz),
+           !(location %in% c("HH EDTR", "HH EDHH", "HH VUHH", "HH EREV", 
+                             "HH OBEC", "HH ADMT", "HH APAC", "HH PAHH", 
+                             "HH PreAdmit OU", "HH DSU", "HH AMSA", "HH WCOR")),
+           !str_detect(location, "^CY"))
+
+insulin_location <- locations %>%
+    distinct(millennium.id, .keep_all = TRUE) %>%
+    select(millennium.id, location)
+
 data_insulin <- all_pts %>%
     left_join(active_orders, by = "millennium.id") %>%
     left_join(active_meds, by = "millennium.id") %>%
-    mutate_at("order", funs(coalesce(., dose)))
+    left_join(insulin_location, by = "millennium.id") %>%
+    mutate_at("order", funs(coalesce(., dose))) %>%
+    filter(facility != "HC Childrens",
+           age > 14)
 
 n <- all_pts %>%
     count(facility)
