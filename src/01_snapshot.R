@@ -13,11 +13,10 @@ mbo_insulin <- concat_encounters(insulin$med.name)
 #   * Patients - All During Dates
 
 all_pts <- read_data(dir_raw, "patients", FALSE) %>%
-    as.patients(extras = list("admit.datetime" = "`Date and Time - Admit`",
-                              "encounter.status" = "`Encounter Status`",
-                              "encounter.class" = "`Encounter Class Type`")) %>%
-    mutate_at(c("admit.datetime"), ymd_hms) %>%
-    mutate_at(c("admit.datetime"), with_tz, tzone = tz) %>%
+    as.patients(extras = list("admit.datetime" = "Date and Time - Admit",
+                              "encounter.status" = "Encounter Status",
+                              "encounter.class" = "Encounter Class Type")) %>%
+    format_dates("admit.datetime") %>%
     filter(!(encounter.status == "Discharged" & is.na(discharge.datetime)),
            encounter.class != "Emergency",
            floor_date(admit.datetime, "day") < mdy("1/16/2018", tz = tz),
